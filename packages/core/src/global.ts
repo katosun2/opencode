@@ -51,6 +51,7 @@ const paths: {
   config: string
   state: string
   tmp: string
+  repos: string
 } = {
   get home() {
     return process.env.OPENCODE_TEST_HOME ?? os.homedir()
@@ -67,6 +68,7 @@ const paths: {
   config,
   state,
   tmp,
+  repos: path.join(data, "repos"),
 }
 
 export const Path = paths
@@ -80,6 +82,7 @@ await Promise.all([
   fs.mkdir(Path.tmp, { recursive: true }),
   fs.mkdir(Path.log, { recursive: true }),
   fs.mkdir(Path.bin, { recursive: true }),
+  fs.mkdir(Path.repos, { recursive: true }),
 ])
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Global") {}
@@ -93,6 +96,7 @@ export interface Interface {
   readonly tmp: string
   readonly bin: string
   readonly log: string
+  readonly repos: string
 }
 
 export function make(input: Partial<Interface> = {}): Interface {
@@ -105,6 +109,7 @@ export function make(input: Partial<Interface> = {}): Interface {
     tmp: Path.tmp,
     bin: Path.bin,
     log: Path.log,
+    repos: Path.repos,
     ...input,
   }
 }
