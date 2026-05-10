@@ -135,6 +135,12 @@ export const Info = Schema.Struct({
     description: "Default shell to use for terminal and bash tool",
   }),
   logLevel: Schema.optional(LogLevelRef).annotate({ description: "Log level" }),
+  logDir: Schema.optional(Schema.String).annotate({
+    description: "Custom directory for log files",
+  }),
+  registry: Schema.optional(Schema.String).annotate({
+    description: "npm registry URL for installing packages (e.g., https://registry.npmmirror.com)",
+  }),
   server: Schema.optional(ConfigServer.Server).annotate({
     description: "Server configuration for opencode serve and web commands",
   }),
@@ -605,6 +611,7 @@ export const layer = Layer.effect(
                   version: InstallationLocal ? undefined : InstallationVersion,
                 },
               ],
+              registry: result.registry,
             })
             .pipe(
               Effect.exit,

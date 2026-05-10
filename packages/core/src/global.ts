@@ -5,6 +5,7 @@ import os from "os"
 import { Context, Effect, Layer } from "effect"
 import { Flock } from "./util/flock"
 import { Flag } from "./flag/flag"
+import { existsSync, readFileSync } from "fs"
 
 const app = "opencode"
 const data = path.join(xdgData!, app)
@@ -13,13 +14,55 @@ const config = path.join(xdgConfig!, app)
 const state = path.join(xdgState!, app)
 const tmp = path.join(os.tmpdir(), app)
 
-const paths = {
+function readLogDir(): string | undefined {
+  // Determine config directory (respect OPENCODE_CONFIG_DIR)
+  const configDir = Flag.OPENCODE_CONFIG_DIR || config
+  
+  // Config file has highest priority
+  for (const file of ["config.json", "opencode.json", "opencode.jsonc"]) {
+    const filepath = path.join(configDir, file)
+    if (!existsSync(filepath)) continue
+    try {
+      const parsed = JSON.parse(readFileSync(filepath, "utf-8"))
+      if (typeof parsed.logDir === "string") return parsed.logDir
+    } catch {}
+  }
+  
+  // Fallback to OPENCODE_CONFIG env var
+  const envConfig = process.env.OPENCODE_CONFIG
+  if (envConfig && existsSync(envConfig)) {
+    try {
+      const parsed = JSON.parse(readFileSync(envConfig, "utf-8"))
+      if (typeof parsed.logDir === "string") return parsed.logDir
+    } catch {}
+  }
+  
+  return undefined
+}
+
+let customLogDir = readLogDir()
+
+const paths: {
+  home: string
+  data: string
+  bin: string
+  log: string
+  cache: string
+  config: string
+  state: string
+  tmp: string
+} = {
   get home() {
     return process.env.OPENCODE_TEST_HOME ?? os.homedir()
   },
   data,
   bin: path.join(cache, "bin"),
-  log: path.join(data, "log"),
+  get log() {
+    return customLogDir || path.join(data, "log")
+  },
+  set log(value: string) {
+    customLogDir = value
+  },
   cache,
   config,
   state,

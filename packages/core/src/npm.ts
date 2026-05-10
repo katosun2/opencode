@@ -10,6 +10,14 @@ import { EffectFlock } from "./util/effect-flock"
 import { makeRuntime } from "./effect/runtime"
 import { NpmConfig } from "./npm-config"
 
+/**
+ * 获取当前配置的 npm registry
+ * 优先级：环境变量 npm_config_registry > NPM_CONFIG_REGISTRY > 传入的 configRegistry > 默认值
+ */
+export function getRegistry(configRegistry?: string): string {
+  return process.env.npm_config_registry || process.env.NPM_CONFIG_REGISTRY || configRegistry || "https://registry.npmjs.org"
+}
+
 export class InstallFailedError extends Schema.TaggedErrorClass<InstallFailedError>()("NpmInstallFailedError", {
   add: Schema.Array(Schema.String).pipe(Schema.optional),
   dir: Schema.String,
@@ -22,7 +30,7 @@ export interface EntryPoint {
 }
 
 export interface Interface {
-  readonly add: (pkg: string) => Effect.Effect<EntryPoint, InstallFailedError | EffectFlock.LockError>
+  readonly add: (pkg: string, registry?: string) => Effect.Effect<EntryPoint, InstallFailedError | EffectFlock.LockError>
   readonly install: (
     dir: string,
     input?: {
@@ -30,6 +38,7 @@ export interface Interface {
         name: string
         version?: string
       }[]
+      registry?: string
     },
   ) => Effect.Effect<void, EffectFlock.LockError | InstallFailedError>
   readonly which: (pkg: string, bin?: string) => Effect.Effect<Option.Option<string>>
@@ -75,12 +84,15 @@ export const layer = Layer.effect(
     const fs = yield* FileSystem.FileSystem
     const flock = yield* EffectFlock.Service
     const directory = (pkg: string) => path.join(global.cache, "packages", sanitize(pkg))
-    const reify = (input: { dir: string; add?: string[] }) =>
+    const reify = (input: { dir: string; add?: string[]; registry?: string }) =>
       Effect.gen(function* () {
         yield* flock.acquire(`npm-install:${input.dir}`)
         const { Arborist } = yield* Effect.promise(() => import("@npmcli/arborist"))
         const add = input.add ?? []
+        
+        // Load npm config from .npmrc, then override registry if provided
         const npmOptions = yield* NpmConfig.load(input.dir)
+        const registryOverride = input.registry || process.env.npm_config_registry || process.env.NPM_CONFIG_REGISTRY
         const arborist = new Arborist({
           ...npmOptions,
           path: input.dir,
@@ -88,6 +100,7 @@ export const layer = Layer.effect(
           progress: false,
           savePrefix: "",
           ignoreScripts: true,
+          ...(registryOverride ? { registry: registryOverride } : {}),
         })
         return yield* Effect.tryPromise({
           try: () =>
@@ -110,7 +123,7 @@ export const layer = Layer.effect(
         }),
       )
 
-    const add = Effect.fn("Npm.add")(function* (pkg: string) {
+    const add = Effect.fn("Npm.add")(function* (pkg: string, registry?: string) {
       const dir = directory(pkg)
       const name = (() => {
         try {
@@ -124,7 +137,7 @@ export const layer = Layer.effect(
         return resolveEntryPoint(name, path.join(dir, "node_modules", name))
       }
 
-      const tree = yield* reify({ dir, add: [pkg] })
+      const tree = yield* reify({ dir, add: [pkg], registry })
       const first = tree.edgesOut.values().next().value?.to
       if (!first) {
         const result = resolveEntryPoint(name, path.join(dir, "node_modules", name))
@@ -141,12 +154,13 @@ export const layer = Layer.effect(
       )
       if (!canWrite) return
 
+      const registry = input?.registry
       const add = input?.add.map((pkg) => [pkg.name, pkg.version].filter(Boolean).join("@")) ?? []
       if (
         yield* Effect.gen(function* () {
           const nodeModulesExists = yield* afs.existsSafe(path.join(dir, "node_modules"))
           if (!nodeModulesExists) {
-            yield* reify({ add, dir })
+            yield* reify({ add, dir, registry })
             return true
           }
           return false
@@ -178,7 +192,7 @@ export const layer = Layer.effect(
 
         for (const name of declared) {
           if (!locked.has(name)) {
-            yield* reify({ dir, add })
+            yield* reify({ dir, add, registry })
             return
           }
         }
