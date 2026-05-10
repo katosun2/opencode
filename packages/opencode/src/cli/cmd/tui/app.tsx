@@ -648,11 +648,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         title: "Exit the app",
         slashName: "exit",
         slashAliases: ["quit", "q"],
-        enabled: () => {
-          const current = promptRef.current
-          if (!current?.focused) return true
-          return current.current.input === ""
-        },
         run: () => exit(),
         category: "System",
       },
