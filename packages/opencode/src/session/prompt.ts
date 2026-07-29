@@ -1158,15 +1158,6 @@ const layer = Layer.effect(
             continue
           }
 
-          if (
-            lastFinished &&
-            lastFinished.summary !== true &&
-            (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
-          ) {
-            yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
-            continue
-          }
-
           const agent = yield* agents.get(lastUser.agent)
           if (!agent) {
             const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
@@ -1182,6 +1173,31 @@ const layer = Layer.effect(
             Effect.provideService(FSUtil.Service, fsys),
             Effect.provideService(Session.Service, sessions),
           )
+
+          const transformed = { messages: msgs, contextTokens: undefined as number | undefined }
+          yield* plugin.trigger("experimental.chat.messages.transform", {}, transformed)
+          msgs = transformed.messages
+
+          const overflowTokens =
+            typeof transformed.contextTokens === "number" &&
+            Number.isFinite(transformed.contextTokens) &&
+            transformed.contextTokens > 0
+              ? {
+                  input: Math.ceil(transformed.contextTokens),
+                  output: 0,
+                  reasoning: 0,
+                  cache: { read: 0, write: 0 },
+                }
+              : lastFinished?.tokens
+          if (
+            lastFinished &&
+            lastFinished.summary !== true &&
+            overflowTokens &&
+            (yield* compaction.isOverflow({ tokens: overflowTokens, model }))
+          ) {
+            yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
+            continue
+          }
 
           const msg: SessionV1.Assistant = {
             id: MessageID.ascending(),
@@ -1251,8 +1267,6 @@ const layer = Layer.effect(
 
             if (step === 1)
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
-
-            yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
             const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
