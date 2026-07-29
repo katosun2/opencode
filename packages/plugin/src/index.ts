@@ -286,6 +286,7 @@ export interface Hooks {
         info: Message
         parts: Part[]
       }[]
+      contextTokens?: number
     },
   ) => Promise<void>
   "experimental.chat.system.transform"?: (
