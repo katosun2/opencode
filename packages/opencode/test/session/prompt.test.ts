@@ -208,7 +208,13 @@ const promptRoot = LayerNode.group([
   RuntimeFlags.node,
 ])
 
-function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+type PromptHarnessOptions = {
+  mcpInstructions?: MCP.ServerInstructions[]
+  processor?: "blocking"
+  plugin?: Layer.Layer<Plugin.Service>
+}
+
+function makePrompt(input?: PromptHarnessOptions) {
   const replacements = [
     [SessionSummary.node, summary],
     [LSP.node, lsp],
@@ -216,12 +222,23 @@ function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; proces
     [RuntimeFlags.node, runtimeFlags],
   ] as const
   if (input?.processor === "blocking") {
-    return LayerNode.compile(promptRoot, [...replacements, [SessionProcessor.node, blockingProcessor]])
+    if (input.plugin) {
+      return LayerNode.compile(promptRoot, [
+        ...replacements,
+        [SessionProcessor.node, blockingProcessor],
+        [Plugin.node, input.plugin],
+      ])
+    }
+    return LayerNode.compile(promptRoot, [
+      ...replacements,
+      [SessionProcessor.node, blockingProcessor],
+    ])
   }
+  if (input?.plugin) return LayerNode.compile(promptRoot, [...replacements, [Plugin.node, input.plugin]])
   return LayerNode.compile(promptRoot, replacements)
 }
 
-function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makeHttp(input?: PromptHarnessOptions) {
   const root = LayerNode.group([promptRoot, testLLMServerNode])
   const replacements = [
     [SessionSummary.node, summary],
@@ -230,18 +247,50 @@ function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processo
     [RuntimeFlags.node, runtimeFlags],
   ] as const
   if (input?.processor === "blocking") {
-    return LayerNode.compile(root, [...replacements, [SessionProcessor.node, blockingProcessor]])
+    if (input.plugin) {
+      return LayerNode.compile(root, [
+        ...replacements,
+        [SessionProcessor.node, blockingProcessor],
+        [Plugin.node, input.plugin],
+      ])
+    }
+    return LayerNode.compile(root, [
+      ...replacements,
+      [SessionProcessor.node, blockingProcessor],
+    ])
   }
+  if (input?.plugin) return LayerNode.compile(root, [...replacements, [Plugin.node, input.plugin]])
   return LayerNode.compile(root, replacements)
 }
 
-function makeHttpNoLLMServer(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makeHttpNoLLMServer(input?: PromptHarnessOptions) {
   return makePrompt(input)
+}
+
+function transformPlugin(contextTokens: number) {
+  return Layer.succeed(
+    Plugin.Service,
+    Plugin.Service.of({
+      init: () => Effect.void,
+      trigger: ((name: unknown, _input: unknown, output: unknown) =>
+        Effect.sync(() => {
+          if (name !== "experimental.chat.messages.transform") return output
+          const transformed = output as { messages: SessionV1.WithParts[]; contextTokens?: number }
+          const message = transformed.messages.findLast((message) => message.info.role === "user")
+          const part = message?.parts.find((part) => part.type === "text")
+          if (part?.type === "text") part.text = "LCM transformed context"
+          transformed.contextTokens = contextTokens
+          return output
+        })) as Plugin.Interface["trigger"],
+      list: () => Effect.succeed([]),
+    }),
+  )
 }
 
 const it = testEffect(makeHttp())
 const noLLMServer = testEffect(makeHttpNoLLMServer())
 const raceNoLLMServer = testEffect(makeHttpNoLLMServer({ processor: "blocking" }))
+const transformedContext = testEffect(makeHttp({ plugin: transformPlugin(1) }))
 const withMcpInstructions = testEffect(
   makeHttp({
     mcpInstructions: [
@@ -388,7 +437,10 @@ const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: strin
   return msg
 })
 
-const seed = Effect.fn("test.seed")(function* (sessionID: SessionID, opts?: { finish?: string }) {
+const seed = Effect.fn("test.seed")(function* (
+  sessionID: SessionID,
+  opts?: { finish?: string; tokens?: SessionV1.Assistant["tokens"] },
+) {
   const session = yield* Session.Service
   const msg = yield* user(sessionID, "hello")
   const assistant: SessionV1.Assistant = {
@@ -400,7 +452,7 @@ const seed = Effect.fn("test.seed")(function* (sessionID: SessionID, opts?: { fi
     agent: "build",
     cost: 0,
     path: { cwd: "/tmp", root: "/tmp" },
-    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    tokens: opts?.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
     modelID: ref.modelID,
     providerID: ref.providerID,
     time: { created: Date.now() },
@@ -511,6 +563,37 @@ it.instance("loop calls LLM and returns assistant message", () =>
     const parts = result.parts.filter((p) => p.type === "text")
     expect(parts.some((p) => p.type === "text" && p.text === "world")).toBe(true)
     expect(yield* llm.hits).toHaveLength(1)
+  }),
+)
+
+transformedContext.instance("loop uses transformed context before checking stale overflow usage", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Transformed context",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* seed(chat.id, {
+      finish: "stop",
+      tokens: { input: 90_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "continue" }],
+    })
+    yield* llm.text("world")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const hits = yield* llm.hits
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    expect(hits).toHaveLength(1)
+    expect(JSON.stringify(hits[0]?.body)).toContain("LCM transformed context")
+    expect(messages.some((message) => message.parts.some((part) => part.type === "compaction"))).toBe(false)
   }),
 )
 
