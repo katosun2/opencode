@@ -376,7 +376,7 @@ const layer = Layer.effect(
         { context: [], prompt: undefined },
       )
       const msgs = structuredClone(selected.head)
-      yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+      yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs, contextTokens: undefined })
       const conversation = msgs.map(serialize).filter(Boolean).join("\n\n")
       const nextPrompt =
         compacting.prompt ??
